@@ -197,6 +197,23 @@ wasmtime --dir . build/watnot.wasm \
 
 The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot itself — a high-quality, self-referential training example for WasmGPT.
 
+### Bootstrap Verification Script
+
+`bootstrap.ts` automates the full bootstrap pipeline and verifies the output. It:
+
+1. Builds watnot (`npm run build`)
+2. Disassembles the binary to WAT with an offset map (`wasm2wat --fold-exprs --offset-map`)
+3. Runs watnot on its own source files to produce annotated WAT
+4. Extracts all comments from the source files and checks that each one appears in the annotated WAT output
+
+Run it with:
+
+```bash
+npx ts-node bootstrap.ts
+```
+
+Not all source comments can be verified — structural comments like file headers, section dividers, and function documentation that aren't adjacent to code generating WASM instructions have no corresponding WAT line to be injected at. These are reported as missing but are expected.
+
 ---
 
 ## Resolved Design Decisions

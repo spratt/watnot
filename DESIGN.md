@@ -1,10 +1,10 @@
-# Comment Transplanter: Annotated WAT Generator
+# watnot: Annotated WAT Generator
 
 ## Overview
 
-A command-line tool that takes an AssemblyScript source file and its compiled WASM binary, and produces a WAT file with the original source comments injected at the correct instruction locations.
+**watnot** is a command-line tool that takes an AssemblyScript source file and its compiled WASM binary, and produces a WAT file with the original source comments injected at the correct instruction locations.
 
-The tool is itself implemented in AssemblyScript and compiled to WASM, so that running the tool on its own source produces annotated WAT — which serves as a bootstrapped, high-quality training example for the WasmGPT project.
+watnot is itself implemented in AssemblyScript and compiled to WASM, so that running the tool on its own source produces annotated WAT — which serves as a bootstrapped, high-quality training example for the WasmGPT project.
 
 ---
 
@@ -95,7 +95,7 @@ Annotated WAT output:
 
 ## Implementation
 
-The tool is implemented in AssemblyScript and compiled to WASM. It runs via a WASI-compatible runtime (e.g. `wasmtime` or `wasmedge`) from the command line.
+watnot is implemented in AssemblyScript and compiled to WASM. It runs via a WASI-compatible runtime (e.g. `wasmtime` or `wasmedge`) from the command line.
 
 ### Module Structure
 
@@ -159,17 +159,17 @@ Alternatively, the tool can operate directly on the WASM binary without invoking
 Once the tool is working, run it on its own source:
 
 ```bash
-# Compile the tool itself
-asc src/index.ts --outFile comment-transplanter.wasm --debug
+# Compile watnot itself
+asc src/index.ts --outFile watnot.wasm --debug
 
 # Disassemble to WAT (plain, no annotations)
-wasm2wat comment-transplanter.wasm --output comment-transplanter.wat
+wasm2wat watnot.wasm --output watnot.wat
 
-# Run the tool on its own source to produce annotated WAT
-wasmtime comment-transplanter.wasm -- src/index.ts comment-transplanter.wasm > comment-transplanter-annotated.wat
+# Run watnot on its own source to produce annotated WAT
+wasmtime watnot.wasm -- src/index.ts watnot.wasm > watnot-annotated.wat
 ```
 
-The resulting `comment-transplanter-annotated.wat` is a fully annotated WAT file of the tool itself — a high-quality, self-referential training example for WasmGPT.
+The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot itself — a high-quality, self-referential training example for WasmGPT.
 
 ---
 

@@ -11,7 +11,7 @@ watnot is itself implemented in AssemblyScript and compiled to WASM, so that run
 ## Inputs
 
 - An AssemblyScript source file (`.ts`)
-- The compiled WASM binary of that source file, built with `--debug` to include DWARF debug info
+- The compiled WASM binary of that source file, built with `--debug --sourceMap` to include a source map
 
 ## Output
 
@@ -21,16 +21,15 @@ watnot is itself implemented in AssemblyScript and compiled to WASM, so that run
 
 ## Pipeline
 
-### Step 1: Compile AssemblyScript with debug symbols
+### Step 1: Compile AssemblyScript with source map
 
 ```bash
-asc source.ts --outFile source.wasm --debug
+asc source.ts --outFile source.wasm --debug --sourceMap
 ```
 
-The `--debug` flag causes the compiler to embed DWARF debug information in a custom section of the WASM binary. This includes:
-- Mapping from every WASM instruction byte offset → source file, line number, column
-- Preserved function names
-- Preserved local variable names
+The `--sourceMap` flag causes the compiler to emit a `source.wasm.map` file containing a source map. The source map provides a mapping from WASM byte offsets to source file locations (file, line, column). The `--debug` flag preserves function and local variable names.
+
+Note: AssemblyScript does not emit DWARF debug sections. Source maps are the mechanism AssemblyScript uses for mapping generated code back to source locations.
 
 ### Step 2: Parse source comments
 
@@ -46,21 +45,23 @@ Store as a map: `line number → comment text`
 wasm2wat source.wasm --fold-exprs --debug-names --output source.wat
 ```
 
-This produces a human-readable WAT file in folded S-expression form. `--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the DWARF name section.
+This produces a human-readable WAT file in folded S-expression form. `--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the name section.
 
-### Step 4: Parse DWARF
+Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (Binaryen) is explicitly avoided — it emits a non-compliant S-expression dialect that is incompatible with standard WAT tooling in several edge cases involving ordering and multi-return instructions.
 
-Read the DWARF debug section from the WASM binary and build a mapping:
+### Step 4: Parse source map
+
+Read the `.wasm.map` source map file and build a mapping:
 
 ```
-WAT instruction index → source line number
+WASM byte offset → source line number
 ```
 
-DWARF is stored in custom sections named `.debug_line`, `.debug_info`, etc. The `.debug_line` section contains the line number program — a state machine that, when executed, produces the mapping from instruction byte offsets to source locations.
+Source maps use the standard [Source Map v3](https://sourcemaps.info/spec.html) format. The `mappings` field contains VLQ-encoded segments that map generated positions (WASM byte offsets) to original source positions (file, line, column).
 
 ### Step 5: Inject comments into WAT
 
-Walk the WAT instruction stream. At each instruction, look up its source line number via the DWARF mapping. If that line number (or the line immediately preceding it) has a comment in the source map, inject the comment into the WAT output at that position.
+Walk the WAT instruction stream. At each instruction, look up its source line number via the source map. If that line number (or the line immediately preceding it) has a comment in the comment map, inject the comment into the WAT output at that position.
 
 **Example:**
 
@@ -101,11 +102,9 @@ watnot is implemented in AssemblyScript and compiled to WASM. It runs via a WASI
 ```
 src/
   index.ts          # Entry point, CLI argument handling
-  reader.ts         # Binary reader utilities (byte-level WASM parsing)
-  dwarf.ts          # DWARF debug section parser
-  wat.ts            # WAT file parser and instruction walker
+  sourcemap.ts      # Source map parser (v3 format, VLQ decoding)
   comments.ts       # Source file comment extractor
-  injector.ts       # Combines DWARF map + comment map → annotated WAT
+  injector.ts       # Combines source map + comment map → annotated WAT
 ```
 
 ### Key Data Structures
@@ -117,9 +116,9 @@ type SourceComment = {
   text: string;  // includes the comment syntax, e.g. "// my comment"
 };
 
-// One entry from the DWARF line number program
-type DebugLineEntry = {
-  instructionOffset: u32;  // byte offset in the WASM binary
+// One entry from the source map
+type SourceMapEntry = {
+  generatedOffset: u32;  // byte offset in the WASM binary
   sourceLine: u32;
 };
 
@@ -131,25 +130,21 @@ type WatInstruction = {
 };
 ```
 
-### DWARF Parsing Notes
+### Source Map Parsing Notes
 
-DWARF is a complex format. The minimum viable implementation only needs to parse the `.debug_line` section, which contains the line number program. Libraries for DWARF parsing in AssemblyScript do not currently exist, so a minimal line number program interpreter must be implemented from scratch.
-
-The `.debug_line` state machine tracks:
-- `address` — current instruction byte offset
-- `line` — current source line number
-- `file` — current source file index
-
-Standard opcodes of interest: `DW_LNS_advance_pc`, `DW_LNS_advance_line`, `DW_LNS_copy`, `DW_LNE_end_sequence`.
+Source maps use the [Source Map v3](https://sourcemaps.info/spec.html) format:
+- The file is JSON with fields: `version`, `sources`, `sourcesContent`, `mappings`, `names`
+- The `mappings` field is a string of VLQ-encoded segments separated by `,` (within a line) and `;` (between lines)
+- Each segment encodes: generated column, source file index, original line, original column, and optionally a name index
+- For WASM source maps, the "generated line" is always 0 and the "generated column" is the byte offset into the WASM binary
+- VLQ (Variable-Length Quantity) uses base64 encoding with continuation bits
 
 ### WAT Parsing Notes
 
 Rather than building a full WAT parser, a line-oriented approach is sufficient:
 - Use `wasm2wat --fold-exprs --debug-names` to produce the WAT file as a preprocessing step
 - Parse the WAT line by line
-- Use DWARF to correlate WAT lines with WASM byte offsets
-
-Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (Binaryen) is explicitly avoided — it emits a non-compliant S-expression dialect that is incompatible with standard WAT tooling in several edge cases involving ordering and multi-return instructions.
+- Use the source map to correlate WAT lines with WASM byte offsets
 
 Alternatively, the tool can operate directly on the WASM binary without invoking `wasm2wat` as a subprocess, reconstructing WAT output itself. This is more self-contained but significantly more work.
 
@@ -161,7 +156,7 @@ Once the tool is working, run it on its own source:
 
 ```bash
 # Compile watnot itself
-asc src/index.ts --outFile watnot.wasm --debug
+asc src/index.ts --outFile watnot.wasm --debug --sourceMap
 
 # Disassemble to WAT in folded S-expression form (plain, no annotations)
 wasm2wat watnot.wasm --fold-exprs --debug-names --output watnot.wat
@@ -176,7 +171,6 @@ The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot its
 
 ## Open Questions
 
-- **DWARF library availability** — no AssemblyScript DWARF library exists; the `.debug_line` state machine must be implemented from scratch. Assess complexity before committing to AssemblyScript vs. using a host-language tool (e.g. Rust with the `gimli` crate) for the DWARF parsing step.
 - **WAT line ↔ byte offset correlation** — `wasm2wat` does not emit byte offsets in its output by default. Investigate whether `--enable-annotations` or similar flags produce offset information, or whether the tool must reconstruct this mapping from the WASM binary directly.
-- **Multi-file projects** — DWARF can reference multiple source files. Initial implementation may limit scope to single-file AssemblyScript inputs.
+- **Multi-file projects** — source maps can reference multiple source files. Initial implementation may limit scope to single-file AssemblyScript inputs.
 - **Comment proximity** — comments sometimes appear on the line *before* the statement they describe, and sometimes at the end of the same line. The injector should handle both cases.

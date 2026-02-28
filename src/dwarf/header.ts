@@ -71,7 +71,7 @@ export function parseHeader(bytes: Uint8Array, offset: u32): DebugLineHeader | n
   // version (2 bytes)
   header.version = view.getUint16(offset, true);
   offset += 2;
-  if (header.version !== 4) return null; // Only DWARF v4 supported
+  assert(header.version === 4, "unsupported DWARF version (expected 4, got " + header.version.toString() + ")");
 
   // header_length (4 bytes)
   header.headerLength = view.getUint32(offset, true);

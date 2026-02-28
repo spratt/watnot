@@ -43,10 +43,10 @@ Store as a map: `line number → comment text`
 ### Step 3: Disassemble binary to WAT
 
 ```bash
-wasm2wat source.wasm --output source.wat
+wasm2wat source.wasm --fold-exprs --debug-names --output source.wat
 ```
 
-This produces a human-readable WAT file. With debug info present, `wasm2wat` will preserve function and local variable names.
+This produces a human-readable WAT file in folded S-expression form. `--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the DWARF name section.
 
 ### Step 4: Parse DWARF
 
@@ -74,21 +74,20 @@ function allocate(size: i32): i32 {
 }
 ```
 
-Annotated WAT output:
+Annotated WAT output (folded S-expression form):
 ```wat
 (func $allocate (param $size i32) (result i32)
-  ;; align to 8-byte boundary before allocating
-  local.get $size
-  i32.const 7
-  i32.add
-  i32.const -8
-  i32.and
-  local.tee $size
   ;; check if heap has enough space remaining
-  global.get $heap_ptr
-  i32.add
-  global.get $heap_end
-  i32.le_u)
+  (i32.le_u
+    (i32.add
+      (global.get $heap_ptr)
+      ;; align to 8-byte boundary before allocating
+      (i32.and
+        (i32.add
+          (local.get $size)
+          (i32.const 7))
+        (i32.const -8)))
+    (global.get $heap_end)))
 ```
 
 ---
@@ -146,9 +145,11 @@ Standard opcodes of interest: `DW_LNS_advance_pc`, `DW_LNS_advance_line`, `DW_LN
 ### WAT Parsing Notes
 
 Rather than building a full WAT parser, a line-oriented approach is sufficient:
-- Use `wasm2wat` to produce the WAT file as a preprocessing step
+- Use `wasm2wat --fold-exprs --debug-names` to produce the WAT file as a preprocessing step
 - Parse the WAT line by line
-- Use the `wasm-dis` name section or DWARF to correlate WAT line numbers with WASM byte offsets
+- Use DWARF to correlate WAT lines with WASM byte offsets
+
+Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (Binaryen) is explicitly avoided — it emits a non-compliant S-expression dialect that is incompatible with standard WAT tooling in several edge cases involving ordering and multi-return instructions.
 
 Alternatively, the tool can operate directly on the WASM binary without invoking `wasm2wat` as a subprocess, reconstructing WAT output itself. This is more self-contained but significantly more work.
 
@@ -162,8 +163,8 @@ Once the tool is working, run it on its own source:
 # Compile watnot itself
 asc src/index.ts --outFile watnot.wasm --debug
 
-# Disassemble to WAT (plain, no annotations)
-wasm2wat watnot.wasm --output watnot.wat
+# Disassemble to WAT in folded S-expression form (plain, no annotations)
+wasm2wat watnot.wasm --fold-exprs --debug-names --output watnot.wat
 
 # Run watnot on its own source to produce annotated WAT
 wasmtime watnot.wasm -- src/index.ts watnot.wasm > watnot-annotated.wat

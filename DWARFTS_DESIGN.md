@@ -370,9 +370,14 @@ This manual spot-check confirms the byte offset interpretation is correct per th
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-- **DWARF version** — AssemblyScript with `--debug` emits DWARF version 4. The header parser should assert `version == 4` and error clearly if it encounters version 5, which has a different header format.
-- **Multiple compilation units** — a single `.debug_line` section may contain multiple compilation unit headers in sequence. The implementation should iterate through all of them and merge their line number matrices.
-- **WASI file I/O in AssemblyScript** — confirm the available WASI bindings for reading a file by path from `argv`. The `as-wasi` package provides these but must be declared as a dependency.
-- **JSON output encoding** — AssemblyScript strings are UTF-16 internally; verify that file name output is correctly encoded as UTF-8 in the JSON.
+- **DWARF version** — The header parser asserts `version == 4` and aborts with a clear error message if it encounters any other version. DWARF v5 has a different header format and is not supported.
+- **Multiple compilation units** — Handled. `parseDebugLine()` iterates through all compilation unit headers in the `.debug_line` section and merges their line number matrices.
+
+- **JSON output encoding** — Strings must be explicitly encoded to UTF-8 via `String.UTF8.encode()` before writing to stdout. Do not rely on `as-wasi` to handle the UTF-16 to UTF-8 conversion.
+- **WASI file I/O in AssemblyScript** — Confirmed. `as-wasi` v0.6.0 (compatible with AS `^0.27`) supports all required operations:
+  - **File read**: `FileSystem.open(path, "r")` → `fd.readAll()` returns `u8[]`. Must copy into `Uint8Array` for `parseDebugLine()`.
+  - **Argv access**: `CommandLine.all` returns `Array<string>`.
+  - **Stdout/stderr**: `Console.log()` / `Console.error()` for strings; `Descriptor.Stdout.write()` for raw bytes.
+  - Requires `@assemblyscript/wasi-shim` `^0.1` as a co-dependency. WASI runtime must grant filesystem access (e.g. `wasmtime --dir .`).

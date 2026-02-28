@@ -26,6 +26,14 @@ export function injectComments(
   // where to stop (at another instruction's source line).
   const mappedLines = buildMappedLinesSet(lineToOffset, sourceEntries);
 
+  // Approach C: collect file-level comments per source file.
+  // Find the minimum mapped source line for each source index,
+  // then gather all comments with line numbers below that minimum.
+  const fileLevelComments = collectFileLevelComments(
+    commentMap, lineToOffset, sourceEntries
+  );
+  const headerInjected = new Set<u32>();
+
   for (let i: i32 = 0; i < watLines.length; i++) {
     const watLine = <u32>(i + 1); // 1-based
     const line = watLines[i];
@@ -38,6 +46,22 @@ export function injectComments(
         const e = entry as SourceMapEntry;
         const srcIndex = e.sourceIndex;
         const sourceLine = e.sourceLine + 1; // source map lines are 0-indexed
+
+        // Inject file-level comments before the first instruction from this file
+        if (!headerInjected.has(srcIndex) && fileLevelComments.has(srcIndex)) {
+          headerInjected.add(srcIndex);
+          const fileComments = fileLevelComments.get(srcIndex);
+          for (let fc: i32 = 0; fc < fileComments.length; fc++) {
+            const fkey = fileComments[fc];
+            if (!emittedComments.has(fkey)) {
+              emittedComments.add(fkey);
+              const commentText = commentMap.get(fkey);
+              const watComment = convertToWatComment(commentText);
+              const indent = getIndent(line);
+              output.push(indent + watComment);
+            }
+          }
+        }
 
         // Scan upward to collect all comments above this instruction
         const keys = scanUpwardForComments(commentMap, mappedLines, srcIndex, sourceLine);
@@ -78,6 +102,67 @@ function buildMappedLinesSet(
     }
   }
   return mapped;
+}
+
+// Collect file-level comments for each source file.
+// A file-level comment is any comment with a line number below the
+// minimum mapped source line for that file — i.e., comments that
+// appear before any code that generates WASM instructions.
+// Returns a map from sourceIndex to sorted array of comment keys.
+function collectFileLevelComments(
+  commentMap: Map<u64, string>,
+  lineToOffset: Map<u32, u32>,
+  sourceEntries: Array<SourceMapEntry>
+): Map<u32, Array<u64>> {
+  // Find the minimum mapped source line per source index
+  const minMappedLine = new Map<u32, u32>();
+  const watLineKeys = lineToOffset.keys();
+  for (let j: i32 = 0; j < watLineKeys.length; j++) {
+    const byteOffset = lineToOffset.get(watLineKeys[j]);
+    const entry = lookupOffset(sourceEntries, byteOffset);
+    if (entry !== null) {
+      const e = entry as SourceMapEntry;
+      const srcLine = e.sourceLine + 1; // 1-indexed
+      if (!minMappedLine.has(e.sourceIndex)) {
+        minMappedLine.set(e.sourceIndex, srcLine);
+      } else {
+        const cur = minMappedLine.get(e.sourceIndex);
+        if (srcLine < cur) {
+          minMappedLine.set(e.sourceIndex, srcLine);
+        }
+      }
+    }
+  }
+
+  // Gather comments below the minimum mapped line for each file
+  const result = new Map<u32, Array<u64>>();
+  const commentKeys = commentMap.keys();
+  for (let j: i32 = 0; j < commentKeys.length; j++) {
+    const key = commentKeys[j];
+    const srcIndex = <u32>(key >> 32);
+    const line = <u32>(key & 0xFFFFFFFF);
+    const minLine = minMappedLine.has(srcIndex) ? minMappedLine.get(srcIndex) : <u32>0;
+    if (minMappedLine.has(srcIndex) && line < minLine) {
+      if (!result.has(srcIndex)) {
+        result.set(srcIndex, new Array<u64>());
+      }
+      result.get(srcIndex).push(key);
+    }
+  }
+
+  // Sort each file's comments by line number (ascending)
+  const srcIndices = result.keys();
+  for (let j: i32 = 0; j < srcIndices.length; j++) {
+    result.get(srcIndices[j]).sort(compareCommentKeys);
+  }
+
+  return result;
+}
+
+function compareCommentKeys(a: u64, b: u64): i32 {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 // Scan upward from the given source line to find all comment keys.

@@ -69,7 +69,7 @@ Detect `(func ...` lines in the WAT output. For each function, use the source ma
 
 Superseded by Approach E, which naturally handles function documentation by scanning upward from the first instruction inside a function past the function signature to the comments above it.
 
-### C. File-Level Comment Injection
+### C. File-Level Comment Injection (Implemented)
 
 Collect all comments from the top of each source file (before the first non-comment, non-blank, non-import line) and inject them at a meaningful location in the WAT — either at the very top of the file, or before the first `(func` that originates from that source file.
 
@@ -81,6 +81,23 @@ Collect all comments from the top of each source file (before the first non-comm
 - Only addresses file-level comments, not the other categories
 - Requires heuristics to decide where "file-level" comments end
 - If multiple source files contribute to the WAT, interleaving file headers could be confusing
+
+#### Implementation
+
+Implemented in `src/injector.ts`. Added `collectFileLevelComments()` which runs before the main injection loop.
+
+**`collectFileLevelComments()`** — For each source file, finds the minimum source line that any WAT instruction maps to. Any comment with a line number below that minimum is a file-level comment — it appears before any code that generates WASM instructions. Comments are grouped by source index and sorted by line number so they appear in source order.
+
+**Integration into `injectComments()`** — Tracks which source files have had their headers injected via a `headerInjected` set. When the main loop encounters the first WAT instruction from a given source file, it injects that file's file-level comments before the instruction and before the scan-upward pass runs.
+
+**Results:** Bootstrap verification improved from 96/129 to 124/142 comments found. The 28 newly captured comments are file-level documentation headers from all 5 source files that were previously unreachable by the scan-upward approach.
+
+#### Remaining Missing Comments (18)
+
+After implementing both E and C, the 18 comments still missing are:
+
+- **Section dividers** (3) — `// --- Base64 VLQ ---`, `// --- Minimal JSON field extraction ---`, `// --- Main parser ---` in sourcemap.ts. These sit between function groups with no nearby mapped instruction.
+- **Multi-line function documentation** (15) — comments above functions in injector.ts (`injectComments`, `buildMappedLinesSet`, `collectFileLevelComments`, `scanUpwardForComments`) where multiple lines of documentation are separated from the first instruction by the function signature and local variable declarations, exceeding the scan-upward gap tolerance.
 
 ### D. Orphan Comment Pass
 

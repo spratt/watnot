@@ -22,6 +22,10 @@ export function injectComments(
   const output = new Array<string>();
   const emittedComments = new Set<u64>();
 
+  // Build a set of mapped source lines so scan-upward knows
+  // where to stop (at another instruction's source line).
+  const mappedLines = buildMappedLinesSet(lineToOffset, sourceEntries);
+
   for (let i: i32 = 0; i < watLines.length; i++) {
     const watLine = <u32>(i + 1); // 1-based
     const line = watLines[i];
@@ -35,14 +39,17 @@ export function injectComments(
         const srcIndex = e.sourceIndex;
         const sourceLine = e.sourceLine + 1; // source map lines are 0-indexed
 
-        // Check for comment on this source line or the line before
-        const key = findCommentKey(commentMap, srcIndex, sourceLine);
-        if (key > 0 && !emittedComments.has(key)) {
-          emittedComments.add(key);
-          const commentText = commentMap.get(key);
-          const watComment = convertToWatComment(commentText);
-          const indent = getIndent(line);
-          output.push(indent + watComment);
+        // Scan upward to collect all comments above this instruction
+        const keys = scanUpwardForComments(commentMap, mappedLines, srcIndex, sourceLine);
+        for (let k: i32 = 0; k < keys.length; k++) {
+          const key = keys[k];
+          if (!emittedComments.has(key)) {
+            emittedComments.add(key);
+            const commentText = commentMap.get(key);
+            const watComment = convertToWatComment(commentText);
+            const indent = getIndent(line);
+            output.push(indent + watComment);
+          }
         }
       }
     }
@@ -53,16 +60,84 @@ export function injectComments(
   return joinLines(output);
 }
 
-// Find a comment on the given source line or the line immediately before it.
-// Returns the comment key, or 0 if none found.
-function findCommentKey(commentMap: Map<u64, string>, sourceIndex: u32, sourceLine: u32): u64 {
-  const key1 = commentKey(sourceIndex, sourceLine);
-  if (commentMap.has(key1)) return key1;
-  if (sourceLine > 1) {
-    const key2 = commentKey(sourceIndex, sourceLine - 1);
-    if (commentMap.has(key2)) return key2;
+// Build a set of (sourceIndex, sourceLine) keys for all source lines
+// that are mapped to by any WAT instruction via the source map.
+function buildMappedLinesSet(
+  lineToOffset: Map<u32, u32>,
+  sourceEntries: Array<SourceMapEntry>
+): Set<u64> {
+  const mapped = new Set<u64>();
+  const watLines = lineToOffset.keys();
+  for (let i: i32 = 0; i < watLines.length; i++) {
+    const byteOffset = lineToOffset.get(watLines[i]);
+    const entry = lookupOffset(sourceEntries, byteOffset);
+    if (entry !== null) {
+      const e = entry as SourceMapEntry;
+      const key = commentKey(e.sourceIndex, e.sourceLine + 1);
+      mapped.add(key);
+    }
   }
-  return 0;
+  return mapped;
+}
+
+// Scan upward from the given source line to find all comment keys.
+// Stops when it hits a line that is mapped to another instruction
+// (present in mappedLines) or when it runs out of comments to collect.
+// Returns keys in top-down order (lowest line number first).
+function scanUpwardForComments(
+  commentMap: Map<u64, string>,
+  mappedLines: Set<u64>,
+  sourceIndex: u32,
+  sourceLine: u32
+): Array<u64> {
+  const keys = new Array<u64>();
+
+  // Check the source line itself
+  const selfKey = commentKey(sourceIndex, sourceLine);
+  if (commentMap.has(selfKey)) {
+    keys.push(selfKey);
+  }
+
+  // Scan upward from sourceLine - 1
+  let line = sourceLine;
+  while (line > 1) {
+    line--;
+    const key = commentKey(sourceIndex, line);
+    const isMapped = mappedLines.has(key);
+    if (isMapped) {
+      // Hit another mapped instruction's line — stop
+      break;
+    }
+    if (commentMap.has(key)) {
+      keys.push(key);
+    } else {
+      // No comment on this line — could be blank or code.
+      // Keep scanning past gaps (blank lines between comments
+      // and the instruction), but limit gap size to avoid
+      // reaching unrelated comments far above.
+      // Allow up to 2 consecutive non-comment lines as gaps
+      // (e.g., blank line + function signature).
+      const nextLine = line - 1;
+      if (nextLine >= 1) {
+        const nextKey = commentKey(sourceIndex, nextLine);
+        if (commentMap.has(nextKey) && !mappedLines.has(nextKey)) {
+          // There's a comment just above this gap — keep scanning
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  // Reverse to get top-down order
+  if (keys.length > 1) {
+    const reversed = new Array<u64>();
+    for (let i: i32 = keys.length - 1; i >= 0; i--) {
+      reversed.push(keys[i]);
+    }
+    return reversed;
+  }
+  return keys;
 }
 
 // Convert a source comment to a WAT comment.

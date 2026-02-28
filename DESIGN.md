@@ -10,8 +10,8 @@ watnot is itself implemented in AssemblyScript and compiled to WASM, so that run
 
 ## Inputs
 
-- An AssemblyScript source file (`.ts`)
-- The compiled WASM binary of that source file, built with `--debug --sourceMap` to include a source map
+- One or more AssemblyScript source files (`.ts`)
+- The compiled WASM binary of those source files, built with `--debug --sourceMap` to include a source map
 
 ## Output
 
@@ -33,11 +33,11 @@ Note: AssemblyScript does not emit DWARF debug sections. Source maps are the mec
 
 ### Step 2: Parse source comments
 
-Read the AssemblyScript source file and extract all comments with their line numbers:
+Read each AssemblyScript source file and extract all comments with their line numbers:
 - Single-line comments (`// ...`)
 - Multi-line comments (`/* ... */`)
 
-Store as a map: `line number → comment text`
+Each source file is matched to its index in the source map's `sources` array (exact match, then suffix match). Comments are stored in a map keyed by `(sourceIndex, line)` using a composite `u64` key: `(sourceIndex << 32) | line`.
 
 ### Step 3: Disassemble binary to WAT with offset map
 
@@ -69,14 +69,14 @@ Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (B
 Read the `.wasm.map` source map file and build a mapping:
 
 ```
-WASM byte offset → source line number
+WASM byte offset → (sourceIndex, sourceLine, sourceColumn)
 ```
 
-Source maps use the standard [Source Map v3](https://sourcemaps.info/spec.html) format. The `mappings` field contains VLQ-encoded segments that map generated positions (WASM byte offsets) to original source positions (file, line, column).
+Source maps use the standard [Source Map v3](https://sourcemaps.info/spec.html) format. The `mappings` field contains VLQ-encoded segments that map generated positions (WASM byte offsets) to original source positions (file index, line, column). The `sources` array lists all referenced source files.
 
 ### Step 5: Inject comments into WAT
 
-Using the offset map from Step 3, correlate each WAT line with a WASM byte offset. Then look up that byte offset in the source map from Step 4 to find the original source line. If that source line (or the line immediately preceding it) has a comment in the comment map from Step 2, inject the comment into the WAT output at that position.
+Using the offset map from Step 3, correlate each WAT line with a WASM byte offset. Then look up that byte offset in the source map from Step 4 to find the original source file and line. If that `(sourceIndex, line)` pair (or `(sourceIndex, line - 1)`) has a comment in the comment map from Step 2, inject the comment into the WAT output at that position.
 
 **Example:**
 
@@ -115,8 +115,10 @@ watnot is implemented in AssemblyScript and compiled to WASM. It runs via a WASI
 ### Usage
 
 ```
-wasmtime --dir . watnot.wasm <source.ts> <source.wasm.map> <source.wat> <source.offsets.json>
+wasmtime --dir . watnot.wasm <source.wasm.map> <source.wat> <source.offsets.json> <source1.ts> [source2.ts] ...
 ```
+
+Source files are matched to the source map's `sources` array by path (exact match first, then suffix match). Files not found in the source map are skipped with a warning.
 
 ### Module Structure
 
@@ -187,12 +189,11 @@ wasm2wat build/watnot.wasm --fold-exprs \
 
 # Run watnot on its own source to produce annotated WAT
 wasmtime --dir . build/watnot.wasm \
-  src/index.ts build/watnot.wasm.map \
-  build/watnot.wat build/watnot.offsets.json \
+  build/watnot.wasm.map build/watnot.wat build/watnot.offsets.json \
+  src/index.ts src/comments.ts src/sourcemap.ts \
+  src/offsetmap.ts src/injector.ts \
   > build/watnot-annotated.wat
 ```
-
-Note: bootstrapping currently only injects comments from `src/index.ts`. Multi-file support is needed to inject comments from all source modules (see [MULTI_FILE_PLAN.md](MULTI_FILE_PLAN.md)).
 
 The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot itself — a high-quality, self-referential training example for WasmGPT.
 
@@ -203,10 +204,7 @@ The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot its
 - **JSON parsing** — Purpose-built minimal parsers for source map and offset map JSON, rather than a third-party library. This avoids extra dependencies and handles only the fields we need.
 - **Comment proximity** — The injector checks both the source line and the line immediately before it for comments. This handles comments that appear on the line before the statement they describe.
 - **as-wasi writeStringLn() bug** — `as-wasi`'s `writeStringLn()` reuses `memory.data(8)` for both the `\n` byte and `fd_write`'s output pointer, so newlines get overwritten. The workaround is to include `\n` in the string itself and always use `Console.write(s, false)`.
-
-## Open Questions
-
-- **Multi-file projects** — source maps can reference multiple source files. The current implementation only accepts a single source file for comment extraction. See [MULTI_FILE_PLAN.md](MULTI_FILE_PLAN.md).
+- **Multi-file projects** — Source maps reference multiple source files (e.g., 28 files for watnot: 5 user modules + 23 stdlib). The CLI accepts multiple source files, each matched to its `sourceIndex` in the source map's `sources` array. Comments are keyed by `(sourceIndex, line)` using a composite `u64` key so the injector only matches comments from the correct file.
 
 ---
 

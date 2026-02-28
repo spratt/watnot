@@ -4,7 +4,7 @@
 // that source comments appear in the annotated WAT output.
 
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const WASM2WAT: string = join(
@@ -106,6 +106,8 @@ const annotated: string = runCapture(
     ` build/watnot.wasm.map build/watnot.wat build/watnot.offsets.json` +
     ` ${sourceArgs}`,
 );
+
+writeFileSync("build/watnot-annotated.wat", annotated);
 
 // --- Step 4: Verify comments ---
 console.log("\n=== Step 4: Verify comments ===\n");

@@ -1,0 +1,14 @@
+{
+  "name": "watnot",
+  "version": "0.1.0",
+  "description": "Annotated WAT generator with DWARF debug line parsing",
+  "type": "module",
+  "scripts": {
+    "asbuild:debug": "asc src/dwarf.ts --outFile build/dwarf.debug.wasm --debug --runtime stub",
+    "asbuild:release": "asc src/dwarf.ts --outFile build/dwarf.wasm --optimize --runtime stub",
+    "asbuild": "npm run asbuild:debug && npm run asbuild:release"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.0"
+  }
+}

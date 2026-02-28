@@ -1,28 +1,26 @@
 // Comment injector: combines offset map + source map + comments
 // to produce annotated WAT output.
 
-import { SourceComment } from "./comments";
 import { SourceMapEntry, lookupOffset } from "./sourcemap";
+
+// Encode (sourceIndex, line) into a single u64 key.
+export function commentKey(sourceIndex: u32, line: u32): u64 {
+  return (<u64>sourceIndex << 32) | <u64>line;
+}
 
 // Inject source comments into WAT text.
 // lineToOffset: Map from WAT line number → WASM byte offset
 // sourceEntries: sorted source map entries (byte offset → source location)
-// comments: extracted source comments with line numbers
+// commentMap: Map from commentKey(sourceIndex, line) → comment text
 export function injectComments(
   watText: string,
   lineToOffset: Map<u32, u32>,
   sourceEntries: Array<SourceMapEntry>,
-  comments: Array<SourceComment>
+  commentMap: Map<u64, string>
 ): string {
-  // Build comment lookup: source line → comment text
-  const commentMap = new Map<u32, string>();
-  for (let i: i32 = 0; i < comments.length; i++) {
-    commentMap.set(comments[i].line, comments[i].text);
-  }
-
   const watLines = splitLines(watText);
   const output = new Array<string>();
-  const emittedComments = new Set<u32>();
+  const emittedComments = new Set<u64>();
 
   for (let i: i32 = 0; i < watLines.length; i++) {
     const watLine = <u32>(i + 1); // 1-based
@@ -33,13 +31,15 @@ export function injectComments(
       const entry = lookupOffset(sourceEntries, byteOffset);
 
       if (entry !== null) {
-        const sourceLine = (entry as SourceMapEntry).sourceLine + 1; // source map lines are 0-indexed
+        const e = entry as SourceMapEntry;
+        const srcIndex = e.sourceIndex;
+        const sourceLine = e.sourceLine + 1; // source map lines are 0-indexed
 
         // Check for comment on this source line or the line before
-        const commentLine = findCommentLine(commentMap, sourceLine);
-        if (commentLine > 0 && !emittedComments.has(commentLine)) {
-          emittedComments.add(commentLine);
-          const commentText = commentMap.get(commentLine);
+        const key = findCommentKey(commentMap, srcIndex, sourceLine);
+        if (key > 0 && !emittedComments.has(key)) {
+          emittedComments.add(key);
+          const commentText = commentMap.get(key);
           const watComment = convertToWatComment(commentText);
           const indent = getIndent(line);
           output.push(indent + watComment);
@@ -54,10 +54,14 @@ export function injectComments(
 }
 
 // Find a comment on the given source line or the line immediately before it.
-// Returns the line number of the comment, or 0 if none found.
-function findCommentLine(commentMap: Map<u32, string>, sourceLine: u32): u32 {
-  if (commentMap.has(sourceLine)) return sourceLine;
-  if (sourceLine > 1 && commentMap.has(sourceLine - 1)) return sourceLine - 1;
+// Returns the comment key, or 0 if none found.
+function findCommentKey(commentMap: Map<u64, string>, sourceIndex: u32, sourceLine: u32): u64 {
+  const key1 = commentKey(sourceIndex, sourceLine);
+  if (commentMap.has(key1)) return key1;
+  if (sourceLine > 1) {
+    const key2 = commentKey(sourceIndex, sourceLine - 1);
+    if (commentMap.has(key2)) return key2;
+  }
   return 0;
 }
 

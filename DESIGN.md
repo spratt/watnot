@@ -42,7 +42,7 @@ Store as a map: `line number → comment text`
 ### Step 3: Disassemble binary to WAT with offset map
 
 ```bash
-wasm2wat source.wasm --fold-exprs --debug-names --output source.wat --offset-map source.offsets.json
+wasm2wat source.wasm --fold-exprs --output source.wat --offset-map source.offsets.json
 ```
 
 This produces a human-readable WAT file in folded S-expression form, plus a JSON offset map that correlates WAT output line numbers with WASM binary byte offsets. The offset map is the key link between WAT output and source maps.
@@ -60,7 +60,7 @@ The `--offset-map` flag is provided by [our fork of wabt](https://github.com/spr
 }
 ```
 
-`--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the name section.
+`--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. Debug names (function and local variable names from the name section) are preserved by default; use `--no-debug-names` to disable.
 
 Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (Binaryen) is explicitly avoided — it emits a non-compliant S-expression dialect that is incompatible with standard WAT tooling in several edge cases involving ordering and multi-return instructions.
 
@@ -112,14 +112,21 @@ Annotated WAT output (folded S-expression form):
 
 watnot is implemented in AssemblyScript and compiled to WASM. It runs via a WASI-compatible runtime (e.g. `wasmtime` or `wasmedge`) from the command line.
 
+### Usage
+
+```
+wasmtime --dir . watnot.wasm <source.ts> <source.wasm.map> <source.wat> <source.offsets.json>
+```
+
 ### Module Structure
 
 ```
 src/
   index.ts          # Entry point, CLI argument handling
-  sourcemap.ts      # Source map parser (v3 format, VLQ decoding)
   comments.ts       # Source file comment extractor
-  injector.ts       # Combines source map + comment map → annotated WAT
+  sourcemap.ts      # Source map parser (v3 format, VLQ decoding)
+  offsetmap.ts      # Offset map parser (wasm2wat --offset-map JSON)
+  injector.ts       # Combines offset map + source map + comments → annotated WAT
 ```
 
 ### Key Data Structures
@@ -134,7 +141,9 @@ class SourceComment {
 // One entry from the source map
 class SourceMapEntry {
   generatedOffset: u32 = 0;  // byte offset in the WASM binary
-  sourceLine: u32 = 0;
+  sourceIndex: u32 = 0;      // index into sources array
+  sourceLine: u32 = 0;       // 0-indexed source line
+  sourceColumn: u32 = 0;
 }
 
 // One entry from the offset map (produced by wasm2wat --offset-map)
@@ -167,20 +176,45 @@ Once the tool is working, run it on its own source:
 
 ```bash
 # Compile watnot itself
-asc src/index.ts --outFile watnot.wasm --debug --sourceMap
+asc src/index.ts --outFile build/watnot.wasm \
+  --config node_modules/@assemblyscript/wasi-shim/asconfig.json \
+  --debug --sourceMap
 
 # Disassemble to WAT with offset map
-wasm2wat watnot.wasm --fold-exprs --debug-names --output watnot.wat --offset-map watnot.offsets.json
+wasm2wat build/watnot.wasm --fold-exprs \
+  --output build/watnot.wat \
+  --offset-map build/watnot.offsets.json
 
 # Run watnot on its own source to produce annotated WAT
-wasmtime watnot.wasm -- src/index.ts watnot.wasm.map watnot.wat watnot.offsets.json > watnot-annotated.wat
+wasmtime --dir . build/watnot.wasm \
+  src/index.ts build/watnot.wasm.map \
+  build/watnot.wat build/watnot.offsets.json \
+  > build/watnot-annotated.wat
 ```
+
+Note: bootstrapping currently only injects comments from `src/index.ts`. Multi-file support is needed to inject comments from all source modules (see [MULTI_FILE_PLAN.md](MULTI_FILE_PLAN.md)).
 
 The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot itself — a high-quality, self-referential training example for WasmGPT.
 
 ---
 
+## Resolved Design Decisions
+
+- **JSON parsing** — Purpose-built minimal parsers for source map and offset map JSON, rather than a third-party library. This avoids extra dependencies and handles only the fields we need.
+- **Comment proximity** — The injector checks both the source line and the line immediately before it for comments. This handles comments that appear on the line before the statement they describe.
+- **as-wasi writeStringLn() bug** — `as-wasi`'s `writeStringLn()` reuses `memory.data(8)` for both the `\n` byte and `fd_write`'s output pointer, so newlines get overwritten. The workaround is to include `\n` in the string itself and always use `Console.write(s, false)`.
+
 ## Open Questions
 
-- **Multi-file projects** — source maps can reference multiple source files. Initial implementation may limit scope to single-file AssemblyScript inputs.
-- **Comment proximity** — comments sometimes appear on the line *before* the statement they describe, and sometimes at the end of the same line. The injector should handle both cases.
+- **Multi-file projects** — source maps can reference multiple source files. The current implementation only accepts a single source file for comment extraction. See [MULTI_FILE_PLAN.md](MULTI_FILE_PLAN.md).
+
+---
+
+## AssemblyScript Constraints
+
+- All classes need field initializers
+- No closures, no `for..of`, no anonymous object returns
+- Sort comparators must be top-level functions
+- `abort()` instead of `process.exit()`
+- WASI support requires `@assemblyscript/wasi-shim` and `as-wasi`
+- Compile with `--config node_modules/@assemblyscript/wasi-shim/asconfig.json` for WASI compatibility

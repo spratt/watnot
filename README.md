@@ -1,5 +1,8 @@
 # watnot
 
+[![CI](https://github.com/spratt/watnot/actions/workflows/ci.yml/badge.svg)](https://github.com/spratt/watnot/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-93%25-brightgreen)
+
 watnot is a command-line tool that takes AssemblyScript source files and their compiled WASM binary, and produces a WAT file with the original source comments injected at the correct instruction locations.
 
 watnot is itself implemented in AssemblyScript and compiled to WASM, so running the tool on its own source produces annotated WAT — a bootstrapped, self-referential training example for the WasmGPT project.

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - name: Run unit tests
+        run: npm test
+
+  bootstrap:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      - name: Install wasmtime
+        run: curl https://wasmtime.dev/install.sh -sSf | bash
+
+      - name: Build wabt fork (--offset-map support)
+        run: |
+          git clone --recursive -b byte_offsets https://github.com/spratt/wabt.git ~/Personal/wabt
+          cd ~/Personal/wabt
+          mkdir build
+          cd build
+          cmake ..
+          make -j$(nproc) wasm2wat
+
+      - name: Run bootstrap verification
+        run: npx ts-node bootstrap.ts

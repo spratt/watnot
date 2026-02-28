@@ -76,7 +76,25 @@ Source maps use the standard [Source Map v3](https://sourcemaps.info/spec.html) 
 
 ### Step 5: Inject comments into WAT
 
-Using the offset map from Step 3, correlate each WAT line with a WASM byte offset. Then look up that byte offset in the source map from Step 4 to find the original source file and line. If that `(sourceIndex, line)` pair (or `(sourceIndex, line - 1)`) has a comment in the comment map from Step 2, inject the comment into the WAT output at that position.
+Using the offset map from Step 3, correlate each WAT line with a WASM byte offset. Then look up that byte offset in the source map from Step 4 to find the original source file and line. Use that source location to find comments in the comment map from Step 2 and inject them into the WAT output.
+
+The injector uses three complementary strategies to achieve complete comment coverage. They run in order and share an `emittedComments` set so each comment is injected exactly once.
+
+#### Scan-upward
+
+The primary injection strategy. For each WAT line that maps to a source line, scan upward through the source file collecting comments until hitting a natural boundary (another mapped source line). This adaptively handles comments directly on an instruction, comments one line above, function documentation separated by a function signature, and multi-line comment blocks — without a fixed proximity window.
+
+The scan peeks past single-line gaps (blank lines, function signatures) to find comments just above, but stops at mapped lines belonging to other instructions to avoid misattribution. Comments are injected in top-down source order before the WAT line.
+
+#### File-level injection
+
+For each source file, finds the minimum source line that any WAT instruction maps to. Any comment with a line number below that minimum is a file-level comment — it appears in the file header before any code that generates WASM instructions. These comments are injected before the first WAT instruction from that source file.
+
+This handles file-level documentation (module descriptions, usage comments) that scan-upward cannot reach because imports and declarations separate them from the first instruction.
+
+#### Orphan pass
+
+After the main injection loop, collects any comments that were not placed by scan-upward or file-level injection. Each orphan is attached to the nearest WAT instruction from the same source file, preferring the next instruction after the comment. This catches section dividers and function documentation separated from the first instruction by multiple lines of declarations.
 
 **Example:**
 
@@ -168,7 +186,7 @@ Source maps use the [Source Map v3](https://sourcemaps.info/spec.html) format:
 
 The offset map produced by `wasm2wat --offset-map` provides a direct `watLine → byteOffset` mapping. This eliminates the need for watnot to parse the WASM binary or reconstruct WAT output — the correlation between WAT lines and WASM byte offsets is provided externally.
 
-The injector reads the WAT file line by line. For each line, it checks the offset map for a byte offset, then looks up that offset in the source map to find the original source line, then checks the comment map for a comment at that source line.
+The injector reads the WAT file line by line. For each line, it checks the offset map for a byte offset, then looks up that offset in the source map to find the original source line. It then uses the three injection strategies (scan-upward, file-level injection, orphan pass) to find and inject comments from the comment map.
 
 ---
 
@@ -212,14 +230,14 @@ Run it with:
 npx ts-node bootstrap.ts
 ```
 
-Not all source comments can be verified — structural comments like file headers, section dividers, and function documentation that aren't adjacent to code generating WASM instructions have no corresponding WAT line to be injected at. These are reported as missing but are expected.
+The bootstrap currently achieves 100% comment coverage — all source comments are injected into the annotated WAT output.
 
 ---
 
 ## Resolved Design Decisions
 
 - **JSON parsing** — Purpose-built minimal parsers for source map and offset map JSON, rather than a third-party library. This avoids extra dependencies and handles only the fields we need.
-- **Comment proximity** — The injector checks both the source line and the line immediately before it for comments. This handles comments that appear on the line before the statement they describe.
+- **Comment injection strategies** — Three complementary strategies (scan-upward, file-level injection, orphan pass) achieve 100% comment coverage. Scan-upward handles comments near instructions, file-level injection handles file headers, and the orphan pass catches section dividers and documentation separated from instructions by multiple lines of code. All three share an `emittedComments` set to avoid duplicates.
 - **as-wasi writeStringLn() bug** — `as-wasi`'s `writeStringLn()` reuses `memory.data(8)` for both the `\n` byte and `fd_write`'s output pointer, so newlines get overwritten. The workaround is to include `\n` in the string itself and always use `Console.write(s, false)`.
 - **Multi-file projects** — Source maps reference multiple source files (e.g., 28 files for watnot: 5 user modules + 23 stdlib). The CLI accepts multiple source files, each matched to its `sourceIndex` in the source map's `sources` array. Comments are keyed by `(sourceIndex, line)` using a composite `u64` key so the injector only matches comments from the correct file.
 

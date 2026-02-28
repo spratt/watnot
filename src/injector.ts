@@ -27,7 +27,7 @@ export function injectComments(
   // where to stop (at another instruction's source line).
   const mappedLines = buildMappedLinesSet(lineToOffset, sourceEntries);
 
-  // Approach C: collect file-level comments per source file.
+  // File-level injection: collect file-level comments per source file.
   // Find the minimum mapped source line for each source index,
   // then gather all comments with line numbers below that minimum.
   const fileLevelComments = collectFileLevelComments(
@@ -83,7 +83,7 @@ export function injectComments(
     output.push(line);
   }
 
-  // Approach D: orphan comment pass.
+  // Orphan pass: collect comments not yet emitted and attach each to the
   // Collect comments not yet emitted and attach each to the
   // nearest WAT line from the same source file.
   const orphanKeys = findOrphanKeys(commentMap, emittedComments);
@@ -271,7 +271,7 @@ function scanUpwardForComments(
   return keys;
 }
 
-// Find all comment keys that were not emitted by approaches E and C.
+// Find all comment keys that were not emitted by scan-upward or file-level injection.
 // Returns keys sorted by (sourceIndex, line) so orphans from the
 // same file appear in source order.
 function findOrphanKeys(

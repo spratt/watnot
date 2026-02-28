@@ -39,13 +39,28 @@ Read the AssemblyScript source file and extract all comments with their line num
 
 Store as a map: `line number → comment text`
 
-### Step 3: Disassemble binary to WAT
+### Step 3: Disassemble binary to WAT with offset map
 
 ```bash
-wasm2wat source.wasm --fold-exprs --debug-names --output source.wat
+wasm2wat source.wasm --fold-exprs --debug-names --output source.wat --offset-map source.offsets.json
 ```
 
-This produces a human-readable WAT file in folded S-expression form. `--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the name section.
+This produces a human-readable WAT file in folded S-expression form, plus a JSON offset map that correlates WAT output line numbers with WASM binary byte offsets. The offset map is the key link between WAT output and source maps.
+
+The `--offset-map` flag is provided by [our fork of wabt](https://github.com/spratt/wabt/tree/byte_offsets). It outputs a JSON file like:
+
+```json
+{
+  "version": 1,
+  "mappings": [
+    { "watLine": 4, "offset": 35 },
+    { "watLine": 5, "offset": 37 },
+    { "watLine": 6, "offset": 39 }
+  ]
+}
+```
+
+`--fold-exprs` emits instructions as nested S-expressions rather than flat stack notation, making the data flow explicit in the tree structure. `--debug-names` preserves function and local variable names from the name section.
 
 Note: the folded S-expression form is preferred throughout watnot. `wasm-dis` (Binaryen) is explicitly avoided — it emits a non-compliant S-expression dialect that is incompatible with standard WAT tooling in several edge cases involving ordering and multi-return instructions.
 
@@ -61,7 +76,7 @@ Source maps use the standard [Source Map v3](https://sourcemaps.info/spec.html) 
 
 ### Step 5: Inject comments into WAT
 
-Walk the WAT instruction stream. At each instruction, look up its source line number via the source map. If that line number (or the line immediately preceding it) has a comment in the comment map, inject the comment into the WAT output at that position.
+Using the offset map from Step 3, correlate each WAT line with a WASM byte offset. Then look up that byte offset in the source map from Step 4 to find the original source line. If that source line (or the line immediately preceding it) has a comment in the comment map from Step 2, inject the comment into the WAT output at that position.
 
 **Example:**
 
@@ -111,23 +126,22 @@ src/
 
 ```typescript
 // A comment extracted from source
-type SourceComment = {
-  line: u32;
-  text: string;  // includes the comment syntax, e.g. "// my comment"
-};
+class SourceComment {
+  line: u32 = 0;
+  text: string = "";  // includes the comment syntax, e.g. "// my comment"
+}
 
 // One entry from the source map
-type SourceMapEntry = {
-  generatedOffset: u32;  // byte offset in the WASM binary
-  sourceLine: u32;
-};
+class SourceMapEntry {
+  generatedOffset: u32 = 0;  // byte offset in the WASM binary
+  sourceLine: u32 = 0;
+}
 
-// An instruction in the WAT file with its position
-type WatInstruction = {
-  byteOffset: u32;   // corresponding byte offset in the WASM binary
-  watLine: u32;      // line number in the WAT file
-  text: string;      // the instruction text
-};
+// One entry from the offset map (produced by wasm2wat --offset-map)
+class OffsetMapEntry {
+  watLine: u32 = 0;    // line number in the WAT file
+  offset: u32 = 0;     // byte offset in the WASM binary
+}
 ```
 
 ### Source Map Parsing Notes
@@ -139,14 +153,11 @@ Source maps use the [Source Map v3](https://sourcemaps.info/spec.html) format:
 - For WASM source maps, the "generated line" is always 0 and the "generated column" is the byte offset into the WASM binary
 - VLQ (Variable-Length Quantity) uses base64 encoding with continuation bits
 
-### WAT Parsing Notes
+### Offset Map Notes
 
-Rather than building a full WAT parser, a line-oriented approach is sufficient:
-- Use `wasm2wat --fold-exprs --debug-names` to produce the WAT file as a preprocessing step
-- Parse the WAT line by line
-- Use the source map to correlate WAT lines with WASM byte offsets
+The offset map produced by `wasm2wat --offset-map` provides a direct `watLine → byteOffset` mapping. This eliminates the need for watnot to parse the WASM binary or reconstruct WAT output — the correlation between WAT lines and WASM byte offsets is provided externally.
 
-Alternatively, the tool can operate directly on the WASM binary without invoking `wasm2wat` as a subprocess, reconstructing WAT output itself. This is more self-contained but significantly more work.
+The injector reads the WAT file line by line. For each line, it checks the offset map for a byte offset, then looks up that offset in the source map to find the original source line, then checks the comment map for a comment at that source line.
 
 ---
 
@@ -158,11 +169,11 @@ Once the tool is working, run it on its own source:
 # Compile watnot itself
 asc src/index.ts --outFile watnot.wasm --debug --sourceMap
 
-# Disassemble to WAT in folded S-expression form (plain, no annotations)
-wasm2wat watnot.wasm --fold-exprs --debug-names --output watnot.wat
+# Disassemble to WAT with offset map
+wasm2wat watnot.wasm --fold-exprs --debug-names --output watnot.wat --offset-map watnot.offsets.json
 
 # Run watnot on its own source to produce annotated WAT
-wasmtime watnot.wasm -- src/index.ts watnot.wasm > watnot-annotated.wat
+wasmtime watnot.wasm -- src/index.ts watnot.wasm.map watnot.wat watnot.offsets.json > watnot-annotated.wat
 ```
 
 The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot itself — a high-quality, self-referential training example for WasmGPT.
@@ -171,6 +182,5 @@ The resulting `watnot-annotated.wat` is a fully annotated WAT file of watnot its
 
 ## Open Questions
 
-- **WAT line ↔ byte offset correlation** — `wasm2wat` does not emit byte offsets in its output by default. Investigate whether `--enable-annotations` or similar flags produce offset information, or whether the tool must reconstruct this mapping from the WASM binary directly.
 - **Multi-file projects** — source maps can reference multiple source files. Initial implementation may limit scope to single-file AssemblyScript inputs.
 - **Comment proximity** — comments sometimes appear on the line *before* the statement they describe, and sometimes at the end of the same line. The injector should handle both cases.

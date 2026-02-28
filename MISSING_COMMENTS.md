@@ -99,7 +99,7 @@ After implementing both E and C, the 18 comments still missing are:
 - **Section dividers** (3) — `// --- Base64 VLQ ---`, `// --- Minimal JSON field extraction ---`, `// --- Main parser ---` in sourcemap.ts. These sit between function groups with no nearby mapped instruction.
 - **Multi-line function documentation** (15) — comments above functions in injector.ts (`injectComments`, `buildMappedLinesSet`, `collectFileLevelComments`, `scanUpwardForComments`) where multiple lines of documentation are separated from the first instruction by the function signature and local variable declarations, exceeding the scan-upward gap tolerance.
 
-### D. Orphan Comment Pass
+### D. Orphan Comment Pass (Implemented)
 
 After the main injection pass, collect all source comments that were not injected. For each orphan comment, find the nearest instruction in the same source file (by line number) and inject the comment before that instruction's WAT line.
 
@@ -112,6 +112,33 @@ After the main injection pass, collect all source comments that were not injecte
 - Section dividers would be attached to arbitrary nearby instructions
 - Could cluster many orphan comments before a single WAT line, making the output noisy
 - "Nearest instruction" may be below the comment (forward) or above it (backward) — choosing the wrong direction misplaces the comment
+
+#### Implementation
+
+Implemented in `src/injector.ts`. Runs after the main injection loop (approaches E and C) as a final catch-all pass.
+
+**`findOrphanKeys()`** — Collects all comment keys from the comment map that were not emitted by E or C. Returns them sorted by `(sourceIndex, line)` so orphans from the same file appear in source order.
+
+**`buildSourceLineToWatLine()`** — Maps each `commentKey(sourceIndex, sourceLine)` to the first (smallest) WAT line number that maps to that source location. WAT lines are sorted before processing so the first occurrence wins.
+
+**`buildMappedLinesByFile()`** — Groups mapped source line numbers by source index, with each file's lines sorted. Used by `findNearestWatLine()` to locate the closest instruction.
+
+**`findNearestWatLine()`** — For a given orphan comment's `(sourceIndex, line)`, finds the nearest mapped source line in the same file. Prefers the next instruction after the comment (smallest mapped line >= comment line), falling back to the last instruction before the comment if none exists after it.
+
+**Integration into `injectComments()`** — Tracks `watLineToOutputIndex` during the main loop, mapping each WAT line number to its position in the output array. After the loop, orphan comments are grouped by their target output index and inserted before the corresponding WAT line in a second pass that rebuilds the output array.
+
+**Results:** Bootstrap verification improved from 124/142 to 158/158 — all source comments are now injected. The 34 newly captured comments are section dividers and multi-line function documentation that were unreachable by E's scan-upward and C's file-level injection.
+
+#### Combined Results (E + C + D)
+
+| Approach | Comments Found | Total | Improvement |
+|----------|---------------|-------|-------------|
+| Before   | 62            | 112   | —           |
+| After E  | 96            | 129   | +34         |
+| After C  | 124           | 142   | +28         |
+| After D  | 158           | 158   | +34         |
+
+Note: the total increases at each step because the new code in `injector.ts` itself contains comments that become part of the bootstrap verification.
 
 ### E. Scan-Upward from Mapped Lines (Implemented)
 
@@ -154,18 +181,12 @@ The 33 comments still missing after Approach E are:
 - **Module-scope block comments** (10) — `// Step 1: ...` through `// Step 4: ...` in index.ts and similar comments at module scope, separated from instructions by variable declarations.
 - **Multi-line function docs separated by declarations** (6) — function documentation above `injectComments`, `scanUpwardForComments`, etc., separated from the first instruction by the function signature and local variable declarations.
 
-### F. Combination Approach
+### F. Combination Approach (Implemented as E + C + D)
 
-Combine multiple approaches for different comment categories:
+Combined three complementary approaches, each handling different comment categories:
 
 1. **Scan-upward (E)** for function docs and block-level comments
 2. **File-level injection (C)** for file headers
-3. **Ignore** section dividers — they are organizational aids in the source and don't have a meaningful counterpart in WAT
+3. **Orphan pass (D)** for section dividers and any remaining comments
 
-**Pros:**
-- Each category is handled by the approach best suited to it
-- Pragmatic — accepts that some comments (section dividers) don't belong in WAT
-
-**Cons:**
-- More complex implementation
-- Must carefully avoid injecting the same comment twice
+The approaches run in order (E and C during the main loop, D after) and share an `emittedComments` set to avoid duplicate injection. The result is 158/158 comments found — complete coverage.

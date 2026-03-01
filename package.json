@@ -5,6 +5,8 @@
   "scripts": {
     "build": "asc src/index.ts --outFile build/watnot.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:release": "asc src/index.ts --outFile build/watnot.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --optimize --sourceMap",
+    "wat": "wasm2wat build/watnot.wasm --fold-exprs --output build/watnot.wat --offset-map build/watnot.offsets.json",
+    "annotate": "wasmtime --dir . build/watnot.wasm build/watnot.wasm.map build/watnot.wat build/watnot.offsets.json src/index.ts src/comments.ts src/injector.ts src/offsetmap.ts src/sourcemap.ts > build/watnot-annotated.wat",
     "test": "as-test"
   },
   "devDependencies": {
